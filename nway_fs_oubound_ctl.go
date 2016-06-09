@@ -1,3 +1,10 @@
+/*
+GPL许可
+上海宁卫信息技术有限公司李浩
+lihao@nway.com.cn
+
+*/
+
 package nway_fs_oubound_ctl
 
 import (
