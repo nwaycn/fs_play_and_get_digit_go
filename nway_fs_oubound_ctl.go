@@ -1,43 +1,79 @@
-/*
-GPL许可
-上海宁卫信息技术有限公司李浩
-lihao@nway.com.cn
-
-*/
-
-package nway_fs_oubound_ctl
+package nway_fs_o_ctl
 
 import (
 	"errors"
 	"fmt"
-	"github.com/fiorix/go-eventsocket/eventsocket"
- 
+	"nway/utils/eventsocket"
+	"nway/utils/log"
+	. "nway/utils/nway_print"
 	"time"
 )
 
 //bool结果为是否为终止符，检查一个输入按键
 func CheckADtmfEvent(c *eventsocket.Connection, t *time.Timer, EndDtmf string, TwoDtmfTimer int) (string, error, bool) {
 	timer1 := time.NewTimer(time.Second * time.Duration(TwoDtmfTimer))
-	for {
-		ev, err := c.ReadEvent()
-		if err != nil {
-			 
-			return "", err, false
-		}
-		if ev.Get("Event-Name") == "DTMF" {
-			//有按键
-			t.Stop()
+	var nwayerr chan error
+	var nwaydtmf chan string
+	var nwayenddtmf chan bool
+	nwayerr = make(chan error)
+	nwaydtmf = make(chan string)
+	nwayenddtmf = make(chan bool)
+	go func() {
+		for t := range timer1.C {
+			nwayerr <- errors.New("Wait key expired")
 			timer1.Stop()
-			dtmf := ev.Get("Dtmf-Digit")
-			if dtmf == EndDtmf {
-				return "", nil, true
-			} else {
-				return dtmf, nil, false
+			Nway_println("CheckADtmfEvent Timeout:", t)
+			return
+			//return "", errors.New("Max Time not to press a key  ")
+		}
+	}()
+
+	go func() {
+		for {
+			ev, err := c.ReadEvent()
+			if err != nil {
+				logger.Error("Read dtmf failed")
+				nwayerr <- err
+				//nwayenddtmf <- false
+				//return "", err, false
+				return
+			}
+			if ev.Get("Event-Name") == "DTMF" {
+				//有按键
+				t.Stop()
+				timer1.Stop()
+				dtmf := ev.Get("Dtmf-Digit")
+				if dtmf == EndDtmf {
+					//nwayerr <- nil
+					nwayenddtmf <- true
+					nwaydtmf <- ""
+					//return "", nil, true
+					return
+				} else {
+					//nwayerr <- nil
+					nwayenddtmf <- false
+					nwaydtmf <- dtmf
+					//return dtmf, nil, false
+					return
+				}
 			}
 		}
+	}()
+	var (
+		err    error
+		dtmf   string
+		isdtmf bool
+	)
+	select {
+	case err = <-nwayerr:
+		return "", err, false
+	case isdtmf = <-nwayenddtmf:
+		dtmf = <-nwaydtmf
+		return dtmf, nil, isdtmf
 	}
-	<-timer1.C
-	return "", errors.New("Wait key expired"), false
+	//<-timer1.C
+	//Nway_println("CheckADtmfEvent Timeout")
+	//return "", errors.New("Wait key expired"), false
 
 }
 
@@ -82,14 +118,37 @@ func CheckDtmfEventMaxFailure(c *eventsocket.Connection, t *time.Timer, EndDtmf 
 func CheckDtmfEventMaxTimer(c *eventsocket.Connection, EndDtmf string, MaxDtmf, MaxTimer, TwoDtmfTimer, MaxFailure int) (string, error) {
 
 	timer2 := time.NewTimer(time.Second * time.Duration(MaxTimer))
-	dtmf, err := CheckDtmfEventMaxFailure(c, timer2, EndDtmf, MaxDtmf, MaxTimer, TwoDtmfTimer, MaxFailure)
-	if err == nil {
-		return dtmf, err
-	} else {
+	var nwayerr chan error
+	var nwaydtmf chan string
+	nwayerr = make(chan error)
+	nwaydtmf = make(chan string)
+	go func() {
+		for t := range timer2.C {
+			nwayerr <- errors.New("Max Time not to press a key  ")
+			timer2.Stop()
+			Nway_println("CheckDtmfEventMaxTimer Timeout:", t)
+			return
+			//return "", errors.New("Max Time not to press a key  ")
+		}
+	}()
+	go func() {
+		dtmf, err := CheckDtmfEventMaxFailure(c, timer2, EndDtmf, MaxDtmf, MaxTimer, TwoDtmfTimer, MaxFailure)
+		if err == nil {
+			nwaydtmf <- dtmf
+		} else {
+			nwayerr <- err
+		}
+	}()
+	var (
+		err  error
+		dtmf string
+	)
+	select {
+	case err = <-nwayerr:
 		return "", err
+	case dtmf = <-nwaydtmf:
+		return dtmf, nil
 	}
-	<-timer2.C
-	return "", errors.New("More than Max timer")
 	//整个按键超时，提示按键出错
 
 }
@@ -109,20 +168,24 @@ func CheckDtmfEventMaxTimer(c *eventsocket.Connection, EndDtmf string, MaxDtmf, 
 */
 func PlayGetDigits(c *eventsocket.Connection, filename, invalidfile, EndDtmf string, MaxDtmf, MaxTimer, TwoDtmfTimer, MaxFailure int) (string, error) {
 	var params, dtmf string
-	params = fmt.Sprintf("1 %d %d %d %s %s %s", MaxDtmf, MaxFailure, MaxTimer*1000, EndDtmf, filename, invalidfile)
+	params = fmt.Sprintf("1 %d %d %d %s %s %s", MaxDtmf, MaxFailure, MaxTimer, EndDtmf, filename, invalidfile)
 	//fmt.Println("play_and_get_digits ", params)
-	_, err := c.Execute("play_and_get_digits", params, false)
+	dtmfe, err := c.Execute("play_and_get_digits", params, false)
 	if err != nil {
+		Nway_println("Get dtmf error:", err)
 		return "", err
 	} else {
-
+		Nway_println("the dtmf:", dtmfe.Get("Dtmf-Digit"))
 		for {
+			Nway_println("A new event for dtmf")
 			_, err = c.ReadEvent()
 			if err != nil {
-				logger.Error("Read dtmf failed")
+				Nway_println("Read dtmf failed")
 				return "", err
 			}
+			Nway_println("Check dtmf ......")
 			dtmf, err = CheckDtmfEventMaxTimer(c, EndDtmf, MaxDtmf, MaxTimer, TwoDtmfTimer, MaxFailure)
+			Nway_println("the dtmf :", dtmf)
 			if err != nil {
 				return "", err
 			} else {
